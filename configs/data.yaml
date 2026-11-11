@@ -1,0 +1,27 @@
+data:
+  root: "~/dead-reckoning-data"
+  provider: alpaca
+  feed: sip
+  adjustment: raw
+  start_date: "2016-01-01"
+
+universe:
+  lookback_days: 20
+  ingestion_rank: 2000
+  min_history_days: 20
+
+ingestion:
+  # Daily batches span up to one year; minute batches span up to one month.
+  daily_batch_size: 100
+  minute_batch_size: 10
+  # Leave headroom below a 200 requests/minute API allowance.
+  requests_per_minute: 180
+  # Maximum bars per response page, shared across all symbols in the request.
+  page_size: 10000
+  max_retries: 5
+  timeout_seconds: 60
+
+query:
+  # DuckDB liquidity queries only; not a downloader or total process RAM limit.
+  memory_limit: "8GB"
+  threads: 8

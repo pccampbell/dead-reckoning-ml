@@ -49,6 +49,37 @@ def test_pagination_ignores_short_and_empty_pages(config_path):
     client.close()
 
 
+def test_permanent_api_error_shows_provider_reason_without_credentials(config_path, market_server):
+    market_server.failures = [400]
+    market_server.failure_message = "invalid symbol: 0029900E0 (fixture-key fixture-secret)"
+    client = AlpacaClient(Credentials(), load_config(config_path).ingestion)
+    try:
+        with pytest.raises(RuntimeError, match="Alpaca HTTP 400") as error:
+            list(client.bar_pages(["AAA"], "1Day", date(2025, 1, 2), date(2025, 1, 3)))
+        assert "fixture-key" not in str(error.value)
+        assert "fixture-secret" not in str(error.value)
+        assert "invalid symbol: 0029900E0" in str(error.value)
+        assert '"code": 40010001' in str(error.value)
+        assert len(market_server.requests) == 1  # Permanent errors are not retried.
+        assert client.telemetry.snapshot()["http_requests_total"] == 1
+    finally:
+        client.close()
+
+
+def test_http_telemetry_counts_retries_pages_and_received_rows(config_path, market_server):
+    market_server.failures = [503]
+    client = AlpacaClient(Credentials(), load_config(config_path).ingestion)
+    client.telemetry.start_stage("daily_bars")
+    try:
+        pages = list(client.bar_pages(["AAA"], "1Day", date(2025, 1, 2), date(2025, 1, 10)))
+        snapshot = client.telemetry.snapshot()
+        assert sum(page.height for page in pages) == 5
+        assert snapshot["rows_received"] == 5
+        assert snapshot["http_requests"] == len(market_server.requests) == 3
+    finally:
+        client.close()
+
+
 def test_atomic_roundtrip_and_page_boundary_dedup(tmp_path):
     frame = pl.DataFrame(
         {
@@ -95,9 +126,13 @@ def test_add_symbols_empty_period_and_missing_file(config_path, market_server):
         start, end = date(2025, 1, 4), date(2025, 1, 6)
         result = ingest_bars(config, manifest, client, "daily_bars", ["AAA"], start, end)
         assert result["rows"] == 0 and result["batches"] == 1
+        assert client.telemetry.snapshot()["http_requests"] == 1
+        assert client.telemetry.snapshot()["rows_received"] == 0
         assert (
             ingest_bars(config, manifest, client, "daily_bars", ["AAA"], start, end)["batches"] == 0
         )
+        assert client.telemetry.snapshot()["http_requests"] == 0
+        assert client.telemetry.snapshot()["http_requests_total"] == 1
         request_count = len(market_server.requests)
         ingest_bars(config, manifest, client, "daily_bars", ["AAA", "BBB"], start, end)
         assert market_server.requests[request_count][1]["symbols"] == "BBB"

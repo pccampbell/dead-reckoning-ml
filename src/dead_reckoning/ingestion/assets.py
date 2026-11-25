@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import polars as pl
 
-from dead_reckoning.market_data.alpaca import AlpacaClient
+from dead_reckoning.market_data.alpaca import AlpacaClient, stock_bar_symbol, stock_bar_symbols
 from dead_reckoning.storage.parquet import read_metadata, write_pages
 
 log = logging.getLogger(__name__)
@@ -62,16 +62,27 @@ def ingest_assets(root: Path, client: AlpacaClient, refresh: bool = False) -> No
     log.info("Assets: stored %s active/inactive reference records", frame.height)
 
 
-def asset_symbols(root: Path) -> list[str]:
+def asset_symbols(root: Path, *, include_otc: bool = False) -> list[str]:
+    """Select SIP bar candidates; retain inactive/non-tradable exchange-listed assets."""
     files = sorted((root / "raw/assets").glob("*.parquet"))
     if not files:
         raise ValueError("No asset snapshot; run 'ingest assets' first")
     # Union snapshots so refreshing the asset master never silently loses old symbols.
-    return (
-        pl.scan_parquet(files)
-        .select("symbol")
-        .unique()
-        .sort("symbol")
-        .collect()["symbol"]
-        .to_list()
+    assets = pl.scan_parquet(files)
+    if not include_otc:
+        assets = assets.filter(pl.col("exchange").fill_null("") != "OTC")
+    symbols = assets.select("symbol").unique().sort("symbol").collect()["symbol"].to_list()
+    normalized = [stock_bar_symbol(symbol) for symbol in symbols]
+    excluded = sum(ticker is None for ticker in normalized)
+    aliases = sum(
+        ticker is not None and ticker != symbol
+        for symbol, ticker in zip(symbols, normalized, strict=True)
     )
+    if excluded or aliases:
+        log.info(
+            "Assets: %s unsupported identifiers excluded from bars; %s aliases normalized; "
+            "raw snapshots retained",
+            excluded,
+            aliases,
+        )
+    return stock_bar_symbols(symbols)

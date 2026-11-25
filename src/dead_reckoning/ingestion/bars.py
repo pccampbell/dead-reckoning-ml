@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime
 
 from dead_reckoning.config import Config, validate_range
 from dead_reckoning.ingestion.manifest import Manifest, missing_intervals
-from dead_reckoning.market_data.alpaca import AlpacaClient
+from dead_reckoning.market_data.alpaca import AlpacaClient, stock_bar_symbol, stock_bar_symbols
 from dead_reckoning.storage.parquet import write_pages
 
 log = logging.getLogger(__name__)
@@ -36,6 +36,13 @@ def ingest_bars(
     validate_range(start, end)
     if dataset not in {"daily_bars", "minute_bars"}:
         raise ValueError(f"Unsupported dataset: {dataset}")
+    invalid = [symbol for symbol in symbols if stock_bar_symbol(symbol) is None]
+    if invalid:
+        raise ValueError(f"Unsupported stock bar identifiers: {', '.join(invalid[:5])}")
+    symbols = stock_bar_symbols(symbols)
+    client.telemetry.start_stage(dataset)
+    if dataset == "daily_bars" and symbols:
+        manifest.record_daily_population(symbols, start, end)
     timeframe = "1Day" if dataset == "daily_bars" else "1Min"
     batch_size = (
         config.ingestion.daily_batch_size
@@ -83,6 +90,7 @@ def ingest_bars(
             except BaseException:
                 # If rename succeeded, reconciliation will recover the final file on restart.
                 manifest.record(path, meta, "failed", {})
+                client.telemetry.log_progress(force=True)
                 raise
             rows += sum(counts.values())
             log.info(
@@ -93,4 +101,6 @@ def ingest_bars(
                 len(batch),
                 sum(counts.values()),
             )
+            client.telemetry.log_progress()
+    client.telemetry.log_progress(force=True)
     return {"batches": requests, "rows": rows, "skipped_symbols": skipped}

@@ -12,12 +12,14 @@ import pytest
 import yaml
 
 from dead_reckoning.market_data import alpaca
+from dead_reckoning.universe.liquidity import session_dates
 
 
 @pytest.fixture
 def market_server(monkeypatch):
-    state = SimpleNamespace(requests=[], failures=[])
+    state = SimpleNamespace(requests=[], failures=[], failure_message="fixture failure")
     ny = ZoneInfo("America/New_York")
+    valid_sessions = set(session_dates(date(2025, 1, 2), date(2025, 2, 15))["date"])
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -34,7 +36,9 @@ def market_server(monkeypatch):
                 if status:
                     self.send_response(status)
                     self.end_headers()
-                    self.wfile.write(b'{"message":"fixture failure"}')
+                    self.wfile.write(
+                        json.dumps({"message": state.failure_message, "code": 40010001}).encode()
+                    )
                     return
             if parsed.path == "/v2/assets":
                 assert "status" not in params
@@ -61,7 +65,7 @@ def market_server(monkeypatch):
                     index = 0
                     day = date(2025, 1, 2)
                     while day < date(2025, 2, 15):
-                        if day.weekday() < 5:
+                        if day in valid_sessions:
                             values = (
                                 [(0, 0)] if params["timeframe"] == "1Day" else [(9, 30), (9, 31)]
                             )
@@ -72,8 +76,8 @@ def market_server(monkeypatch):
                                 if lower <= stamp <= upper:
                                     volume = (
                                         {
-                                            "AAA": 100 if index < 3 else 1,
-                                            "BBB": 10 if index < 3 else 1000,
+                                            "AAA": 100 if index < 2 else 1,
+                                            "BBB": 10 if index < 2 else 1000,
                                             "CCC": 0.1,
                                         }
                                     )[symbol]

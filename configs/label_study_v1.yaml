@@ -1,0 +1,31 @@
+data:
+  root: "~/dead-reckoning-data"
+  feed: sip
+  adjustment: raw
+
+universe:
+  lookback_days: 20
+  min_history_days: 20
+  ingestion_rank: 2000
+
+research:
+  start: "2019-01-01"
+  end: "2024-01-01"  # exclusive; 2024 onward is held out
+  seed: 42
+  sessions_per_month: 1
+  max_sessions: null  # --smoke overrides to two dates spread through the range
+  universe_size: 500
+  decision_minutes: 5
+  execution_delay: 1
+  horizons: [15, 30, 60, 90, 120]
+  pairs:
+    - {name: tight, tp: 0.0025, sl: 0.0020}
+    - {name: original, tp: 0.0050, sl: 0.0040}
+    - {name: symmetric, tp: 0.0050, sl: 0.0050}
+    - {name: higher_rr, tp: 0.0075, sl: 0.0040}
+    - {name: wide, tp: 0.0100, sl: 0.0080}
+  costs_bps: [0, 2, 5, 10, 20]
+  threads: 2
+  memory_limit: "2GB"  # DuckDB buffer budget; total process memory is measured separately
+  max_staleness_days: 7  # last prior daily observation; no current-day bar requirement
+  output: "research/label_study"  # relative to data.root, or an absolute output base

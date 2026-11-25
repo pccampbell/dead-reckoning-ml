@@ -1,0 +1,26 @@
+# Bounded development demonstration; all date ranges are [start, end).
+data:
+  root: "~/dead-reckoning-data"
+  feed: sip
+  adjustment: raw
+universe:
+  lookback_days: 20
+  min_history_days: 20
+  max_staleness_days: 7
+  ingestion_rank: 2000
+query:
+  memory_limit: "2GB"
+  threads: 4
+dataset:
+  start: "2019-01-01"
+  end: "2019-02-01"
+  candidates:
+    universe_size: 500
+    decision_minutes: 5
+    execution_delay: 1
+    side: long
+  policies:
+    - {name: original_60m, tp: 0.005, sl: 0.004, horizon: 60, execution_delay: 1, missing_tolerance: 2, ambiguity: conservative}
+    - {name: original_30m, tp: 0.005, sl: 0.004, horizon: 30, execution_delay: 1, missing_tolerance: 2, ambiguity: conservative}
+    - {name: wide_60m, tp: 0.01, sl: 0.008, horizon: 60, execution_delay: 1, missing_tolerance: 2, ambiguity: conservative}
+  fixed_horizons: [15, 30, 60, 90, 120]

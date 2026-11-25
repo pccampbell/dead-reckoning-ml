@@ -6,12 +6,12 @@ from dead_reckoning.config import load_config
 from dead_reckoning.ingestion.manifest import Manifest
 from dead_reckoning.market_data.alpaca import BAR_SCHEMA
 from dead_reckoning.storage.parquet import write_pages
-from dead_reckoning.universe.liquidity import build_universe
+from dead_reckoning.universe.liquidity import build_universe, session_dates
 
 
 def test_prior_window_union_and_future_invariance(config_path):
     config = load_config(config_path)
-    days = [date(2025, 1, 2) + timedelta(days=index) for index in range(7)]
+    days = session_dates(date(2025, 1, 2), date(2025, 1, 14))["date"].to_list()
 
     def store(path, first, last, values):
         records = []
@@ -39,7 +39,7 @@ def test_prior_window_union_and_future_invariance(config_path):
             "feed": "sip",
             "adjustment": "raw",
             "asof": "-",
-            "start": days[first].isoformat(),
+            "start": (days[first - 1] + timedelta(days=1) if first else days[first]).isoformat(),
             "end": (days[last] + timedelta(days=1)).isoformat(),
             "symbols": list(values),
             "ingested_at": "2025-02-01T00:00:00+00:00",
@@ -70,7 +70,8 @@ def test_prior_window_union_and_future_invariance(config_path):
         row = before.filter((pl.col("symbol") == "BBB") & (pl.col("date") == days[3]))
         assert row["trailing_median_dollar_volume"].item() == 20.0
         assert row["liquidity_rank"].item() == 2
-        assert before.filter(pl.col("date") < days[3])["liquidity_rank"].null_count() == 9
+        # First-ever observation is not prior information on its own session.
+        assert before.filter(pl.col("date") < days[3])["liquidity_rank"].null_count() == 6
 
     store(folder / "future.parquet", 6, 6, {"AAA": [1e12], "BBB": [1e15], "CCC": [1e18]})
     with Manifest(config.data.root) as manifest:

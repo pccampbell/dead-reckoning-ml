@@ -9,7 +9,9 @@ from pathlib import Path
 import duckdb
 import polars as pl
 
-from dead_reckoning.storage.parquet import read_metadata
+from dead_reckoning.ingestion.assets import asset_symbols
+from dead_reckoning.market_data.alpaca import stock_bar_symbols
+from dead_reckoning.storage.parquet import atomic_json, read_metadata
 
 
 def missing_intervals(
@@ -60,6 +62,47 @@ class Manifest:
 
     def close(self) -> None:
         self.db.close()
+
+    def record_daily_population(self, symbols: list[str], start: date, end: date) -> None:
+        """Save the selected population before requests, including not-yet-attempted symbols."""
+        path = self.root / "metadata/daily_requests" / f"{start}_{end}.json"
+        expected = set(stock_bar_symbols(symbols))
+        if path.exists():
+            # A later scoped rerun must not erase an earlier broad request's requirements.
+            expected.update(
+                stock_bar_symbols(json.loads(path.read_text(encoding="utf-8"))["symbols"])
+            )
+        atomic_json(
+            path,
+            {
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "symbols": sorted(expected),
+            },
+        )
+
+    def daily_populations(self) -> list[tuple[date, date, list[str]]]:
+        populations = []
+        excluded_otc = set()
+        if any((self.root / "raw/assets").glob("*.parquet")):
+            # Apply the SIP candidate policy to requests saved before OTC filtering existed.
+            excluded_otc = set(asset_symbols(self.root, include_otc=True)) - set(
+                asset_symbols(self.root)
+            )
+        for path in sorted((self.root / "metadata/daily_requests").glob("*.json")):
+            request = json.loads(path.read_text(encoding="utf-8"))
+            populations.append(
+                (
+                    date.fromisoformat(request["start"]),
+                    date.fromisoformat(request["end"]),
+                    [
+                        symbol
+                        for symbol in stock_bar_symbols(request["symbols"])
+                        if symbol not in excluded_otc
+                    ],
+                )
+            )
+        return populations
 
     def record(self, path: Path, meta: dict, status: str, counts: dict[str, int]) -> None:
         rows = [

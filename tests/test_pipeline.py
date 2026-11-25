@@ -31,11 +31,11 @@ def test_end_to_end_smoke(config_path, market_server):
     assert pl.read_parquet(folder / "symbols.parquet")["symbol"].to_list() == ["AAA", "BBB"]
     assert (
         pl.scan_parquet(root / "raw/daily_bars/**/*.parquet").select(pl.len()).collect().item()
-        == 18
+        == 15
     )
     minute = pl.read_parquet(root / "raw/minute_bars/**/*.parquet")
-    assert minute.height == 24
-    assert minute.unique(["symbol", "timestamp"]).height == 24
+    assert minute.height == 20
+    assert minute.unique(["symbol", "timestamp"]).height == 20
     assert minute["timestamp"].min().date().isoformat() == "2025-01-02"
     report = run("data", "status").output
     assert "2 completed; 0 pending" in report
@@ -44,7 +44,11 @@ def test_end_to_end_smoke(config_path, market_server):
     # A whole bootstrap rerun must make ZERO HTTP calls, including asset ingestion.
     request_count = len(market_server.requests)
     result = run("data", "bootstrap", "--start", "2025-01-02", "--end", "2025-01-10")
-    assert "New request batches: 0; new rows: 0; already covered symbols: 3" in result.output
+    assert "Daily bars complete [2025-01-02, 2025-01-10)" in result.output
+    assert "0 new request batches; 0 new rows; 3 symbols already covered." in result.output
+    assert "Minute bars complete [2025-01-02, 2025-01-10)" in result.output
+    assert "Bootstrap completed successfully for 2025-01-02 to 2025-01-10" in result.output
+    assert result.output.rstrip().endswith(f"Data root: {root}")
     assert len(market_server.requests) == request_count
 
     # Lost index / rename-before-commit recovery must preserve all completed raw coverage.
@@ -59,7 +63,7 @@ def test_end_to_end_smoke(config_path, market_server):
     assert requests
     assert all(params["start"].startswith("2025-01-10") for _, params in requests)
     minute = pl.read_parquet(root / "raw/minute_bars/**/*.parquet")
-    assert minute.height == 32
+    assert minute.height == 28
     assert minute.unique(["symbol", "timestamp"]).height == minute.height
     run("data", "status")
 
@@ -100,6 +104,7 @@ def test_interrupted_pagination_resumes(config_path, market_server):
     market_server.failures = [0, 403]  # Fail after the first actual bar page.
     first = runner.invoke(app, base)
     assert first.exit_code == 1, first.output
+    assert "Daily bars complete" not in first.output
     root = load_config(config_path).data.root
     assert not list((root / "raw/daily_bars").rglob("*.parquet"))
     assert not list((root / "raw/daily_bars").rglob("*.partial"))
@@ -108,7 +113,7 @@ def test_interrupted_pagination_resumes(config_path, market_server):
     resumed = runner.invoke(app, base)
     assert resumed.exit_code == 0, resumed.output
     frame = pl.read_parquet(root / "raw/daily_bars/**/*.parquet")
-    assert frame.height == 12
+    assert frame.height == 10
     count = len(market_server.requests)
     assert runner.invoke(app, base).exit_code == 0
     assert len(market_server.requests) == count

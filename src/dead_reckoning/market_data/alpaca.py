@@ -2,6 +2,7 @@
 
 import logging
 import random
+import re
 import time
 from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
@@ -19,6 +20,7 @@ from alpaca.trading.enums import AssetClass
 from alpaca.trading.requests import GetAssetsRequest
 
 from dead_reckoning.config import Credentials, IngestionConfig
+from dead_reckoning.telemetry import IngestionTelemetry
 
 log = logging.getLogger(__name__)
 DATA_URL = "https://data.alpaca.markets"
@@ -45,6 +47,24 @@ BAR_FIELDS = {
     "n": "trade_count",
     "vw": "vwap",
 }
+
+
+def stock_bar_symbol(symbol: str) -> str | None:
+    """Convert asset aliases to bar tickers; reject CUSIPs and account-only identifiers.
+
+    The stock bars endpoint accepts alphabetic tickers and dot-separated suffixes,
+    not the digit-bearing reference identifiers also returned by the assets API.
+    """
+    ticker = symbol.upper().removesuffix("_DELISTED")
+    return ticker if re.fullmatch(r"[A-Z]+(?:\.[A-Z]+)*", ticker) else None
+
+
+def stock_bar_symbols(symbols: list[str]) -> list[str]:
+    tickers = set()
+    for symbol in symbols:
+        if ticker := stock_bar_symbol(symbol):
+            tickers.add(ticker)
+    return sorted(tickers)
 
 
 def session_bounds(start: date, end: date) -> tuple[datetime, datetime]:
@@ -96,6 +116,7 @@ class AlpacaClient:
             }
         )
         self._next_request = 0.0
+        self.telemetry = IngestionTelemetry(options.requests_per_minute)
 
     def close(self) -> None:
         self.session.close()
@@ -106,6 +127,7 @@ class AlpacaClient:
             self._next_request = time.monotonic() + 60 / self.options.requests_per_minute
             response = None
             try:
+                self.telemetry.record_request()
                 response = self.session.get(
                     url,
                     params=params,
@@ -119,6 +141,7 @@ class AlpacaClient:
                     return response.json()
                 response.raise_for_status()
             except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as exc:
+                self.telemetry.log_progress()
                 if response is not None and response.status_code not in {
                     408,
                     429,
@@ -127,9 +150,14 @@ class AlpacaClient:
                     503,
                     504,
                 }:
+                    message = (response.text.strip() or response.reason).replace("\n", " ")
+                    for header in ("APCA-API-KEY-ID", "APCA-API-SECRET-KEY"):
+                        secret = self.session.headers.get(header)
+                        if secret:
+                            message = message.replace(secret, "[redacted]")
                     raise RuntimeError(
-                        f"Alpaca HTTP {response.status_code}; check credentials, SIP entitlement, "
-                        "and requested symbols. No coverage was marked complete."
+                        f"Alpaca HTTP {response.status_code}: {message}. "
+                        "This request remains incomplete."
                     ) from exc
                 if attempt == self.options.max_retries:
                     raise RuntimeError(
@@ -189,6 +217,8 @@ class AlpacaClient:
             if not isinstance(result, dict) or not isinstance(result.get("bars"), dict):
                 raise ValueError("Invalid Alpaca bars response; coverage remains incomplete")
             frame = bars_frame(result["bars"])
+            self.telemetry.record_rows(frame.height)
+            self.telemetry.log_progress()
             if frame.filter(~pl.col("symbol").is_in(symbols)).height:
                 raise ValueError("Unexpected symbol in Alpaca response")
             yield frame.filter((pl.col("timestamp") >= lower) & (pl.col("timestamp") < upper))
